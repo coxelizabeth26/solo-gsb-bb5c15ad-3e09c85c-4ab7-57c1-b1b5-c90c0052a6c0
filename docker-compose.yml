@@ -1,0 +1,13 @@
+services:
+  app:
+    build: .
+    container_name: mic-freq-coordinator
+    ports:
+      - "3000:3000"
+    volumes:
+      # 持久化 SQLite 数据（设备与方案）
+      - app-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  app-data:

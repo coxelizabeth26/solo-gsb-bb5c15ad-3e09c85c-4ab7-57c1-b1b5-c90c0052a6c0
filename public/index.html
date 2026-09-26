@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>无线麦克风频率协调工具</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🎤 无线麦克风频率协调工具</h1>
+    <p class="subtitle">互调冲突分析 · 自动频率协调 · 方案管理（最多 8 个设备）</p>
+  </header>
+
+  <main>
+    <!-- 设备列表 -->
+    <section class="card" id="device-section">
+      <div class="card-head">
+        <h2>设备列表 <span id="device-count" class="badge">0 / 8</span></h2>
+        <button id="btn-seed" class="btn btn-ghost" title="在空库时载入 8 通道示例数据">载入示例</button>
+      </div>
+      <div class="table-wrap">
+        <table id="device-table">
+          <thead>
+            <tr>
+              <th>#</th><th>名称</th><th>频率 (MHz)</th><th>保护间隔 (MHz)</th>
+              <th>锁定</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="device-tbody"></tbody>
+        </table>
+      </div>
+      <form id="add-form" class="add-form">
+        <input id="add-name" type="text" placeholder="设备名称" maxlength="60" required />
+        <input id="add-freq" type="number" placeholder="频率 MHz，如 512.000" step="0.000001" min="0.000001" required />
+        <input id="add-guard" type="number" placeholder="保护间隔 MHz" step="0.000001" min="0" value="0.25" required />
+        <label class="lock-label"><input id="add-locked" type="checkbox" /> 锁定</label>
+        <button type="submit" class="btn btn-primary" id="btn-add">添加设备</button>
+      </form>
+      <p class="hint">提示：锁定频道在自动协调中保持不动；修改任意设备后冲突分析会自动刷新。</p>
+    </section>
+
+    <!-- 互调冲突 -->
+    <section class="card">
+      <div class="card-head">
+        <h2>互调冲突分析 <span id="conflict-count" class="badge">—</span></h2>
+        <button id="btn-recalc" class="btn btn-ghost">重新计算</button>
+      </div>
+      <p class="hint">枚举任意两个不同频道产生的 |f1−f2|、f1+f2、|2f1−f2|（含两种有序组合），标出落入任一频道保护区（载频 ± 保护间隔，含边界）的互调积。</p>
+      <div id="conflict-result"></div>
+    </section>
+
+    <!-- 自动协调 -->
+    <section class="card">
+      <div class="card-head"><h2>自动频率协调</h2></div>
+      <form id="coord-form" class="coord-form">
+        <label>频段下限 (MHz)<input id="band-min" type="number" step="0.000001" value="470" required /></label>
+        <label>频段上限 (MHz)<input id="band-max" type="number" step="0.000001" value="608" required /></label>
+        <label>步进 (MHz)<input id="step" type="number" step="0.000001" value="0.025" required /></label>
+        <label>最大偏移 (MHz)<input id="max-offset" type="number" step="0.000001" value="5" required /></label>
+        <button type="submit" class="btn btn-primary" id="btn-coordinate">开始协调</button>
+      </form>
+      <div class="occupied-box">
+        <div class="occupied-head">
+          <span>现场占用频段避让（可选，仅用于本次协调，不改动设备数据）</span>
+          <button type="button" class="btn btn-sm btn-ghost" id="btn-add-occupied">+ 添加占用区间</button>
+        </div>
+        <p class="hint">临时填写现场扫描到的占用区间（MHz）。候选频道新载频的保护区与任一占用区间相交（端点相接也算）即视为不可用；重叠区间会自动合并。</p>
+        <div id="occupied-rows"></div>
+      </div>
+      <div id="coord-result"></div>
+    </section>
+
+    <!-- 已保存方案 -->
+    <section class="card">
+      <div class="card-head">
+        <h2>已保存方案 <span id="plan-count" class="badge">0</span></h2>
+        <button id="btn-refresh-plans" class="btn btn-ghost">刷新</button>
+      </div>
+      <div id="plan-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- 方案应用前预览弹窗 -->
+  <div id="preview-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <div class="modal-head">
+        <h2 id="preview-title">方案应用前预览</h2>
+        <button type="button" class="btn btn-sm btn-ghost" id="btn-preview-close">关闭</button>
+      </div>
+      <div id="preview-body" class="modal-body"></div>
+      <div class="modal-foot">
+        <button type="button" class="btn" id="btn-repreview">重新预览</button>
+        <button type="button" class="btn btn-primary" id="btn-confirm-apply">确认应用到全部设备</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
