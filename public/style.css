@@ -283,6 +283,32 @@ input:focus { outline: 2px solid var(--accent-dark); border-color: var(--accent)
 .preview-reasons ul { margin: 0; padding-left: 20px; font-size: 0.88rem; }
 .preview-reasons li { margin-bottom: 4px; }
 
+/* ---------- 安全改频指引 ---------- */
+
+.modal-wide { width: min(920px, 100%); }
+.guide-step {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: rgba(77, 163, 255, 0.05);
+}
+.step-title { margin: 0 0 4px; font-size: 0.95rem; }
+.step-no {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 10px;
+  border-radius: 999px;
+  background: var(--accent-dark);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.freq-table tr.just-changed {
+  background: rgba(63, 206, 124, 0.12);
+}
+.freq-table tr.just-changed td:first-child { font-weight: 600; }
+
 @media (max-width: 860px) {
   .coord-form { grid-template-columns: repeat(2, 1fr); }
   .add-form { grid-template-columns: 1fr 1fr; }

@@ -394,10 +394,12 @@ async function loadPlans() {
         </table></div>
         <div class="plan-actions">
           <button class="btn btn-sm btn-primary" data-act="apply">预览后应用</button>
+          <button class="btn btn-sm" data-act="guide">安全改频指引</button>
           <button class="btn btn-sm btn-danger" data-act="del">删除方案</button>
         </div>
       </details>`;
     div.querySelector('[data-act="apply"]').addEventListener('click', () => openPreview(p.id));
+    div.querySelector('[data-act="guide"]').addEventListener('click', () => openGuide(p.id, p.name));
     div.querySelector('[data-act="del"]').addEventListener('click', async () => {
       if (!confirm(`确定删除方案「${p.name}」？`)) return;
       try {
@@ -524,6 +526,163 @@ $('#btn-confirm-apply').addEventListener('click', async () => {
     }
   }
 });
+
+/* ---------- 安全改频指引（只读） ---------- */
+
+let guideState = null; // { planId, planName }
+
+const guideModal = $('#guide-modal');
+
+function closeGuide() {
+  guideModal.hidden = true;
+  guideState = null;
+}
+
+function checkListHtml(checks) {
+  if (!checks || checks.length === 0) return '';
+  return `<ul class="check-list">${checks
+    .map((c) => `<li class="${c.ok ? 'ok-text' : 'danger-text'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}</li>`)
+    .join('')}</ul>`;
+}
+
+function reasonsHtml(reasons) {
+  if (!reasons || reasons.length === 0) return '';
+  return `<div class="preview-reasons">
+    <p class="danger-text" style="margin:0 0 6px"><strong>原因：</strong></p>
+    <ul>${reasons.map((r) => `<li class="danger-text">${esc(r)}</li>`).join('')}</ul>
+  </div>`;
+}
+
+/** 完整频率表（MHz）；movedId 对应行高亮为本步刚调整的设备 */
+function freqTableHtml(rows, movedId = null) {
+  const body = rows.map((d) => `
+    <tr class="${d.id === movedId ? 'just-changed' : ''}">
+      <td>${esc(d.name)} ${d.locked ? '<span class="tag locked">锁定</span>' : ''}</td>
+      <td class="muted">ID ${d.id}</td>
+      <td class="freq">${fmt(d.frequency)}</td>
+      <td class="freq muted">± ${fmt(d.guard)}</td>
+    </tr>`).join('');
+  return `<div class="table-wrap"><table class="freq-table">
+    <thead><tr><th>设备</th><th></th><th>频率 (MHz)</th><th>保护间隔 (MHz)</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table></div>`;
+}
+
+function renderGuide(payload) {
+  const body = $('#guide-body');
+  const planName = (payload.plan && payload.plan.name) || (guideState && guideState.planName) || '';
+  const occText = occupiedSummary(payload.occupiedBands);
+  const occLine = `
+    <p class="plan-meta" style="margin:6px 0">
+      方案所存占用区间：${occText ? '🚧 ' + esc(occText) : '无（缺省按空数组处理）'}
+    </p>`;
+
+  // 目标检查失败（未通过现有应用检查）
+  if (payload.stage === 'target') {
+    body.innerHTML = `
+      <div class="preview-banner failure">方案「${esc(planName)}」的目标配置未通过应用检查，无法生成安全改频指引。</div>
+      ${reasonsHtml(payload.targetReasons)}
+      ${checkListHtml(payload.targetChecks)}
+      ${occLine}
+      <p class="hint">请先在「预览后应用」中处理上述问题（或重新保存合法方案）后再生成指引。</p>`;
+    return;
+  }
+
+  // 起始配置检查失败
+  if (payload.stage === 'start') {
+    body.innerHTML = `
+      <div class="preview-banner failure">当前设备配置不满足安全改频的起始条件，无法生成指引。</div>
+      ${reasonsHtml(payload.startReasons)}
+      ${checkListHtml(payload.startChecks)}
+      ${occLine}
+      <p class="hint">安全改频要求从“当前无互调冲突且避开方案占用区间”的安全状态起步，请先处理当前配置。</p>`;
+    return;
+  }
+
+  // 频率完全相同
+  if (payload.noChange) {
+    body.innerHTML = `
+      <div class="preview-banner success">✓ ${esc(payload.message || '当前频率与方案目标频率完全相同，无需改频。')}</div>
+      ${checkListHtml([...(payload.targetChecks || []), ...(payload.startChecks || [])])}
+      ${occLine}
+      <p class="plan-meta" style="margin:8px 0 4px">当前完整频率表：</p>
+      ${freqTableHtml(payload.initialTable || [])}`;
+    return;
+  }
+
+  // 不存在安全顺序
+  if (!payload.feasible) {
+    body.innerHTML = `
+      <div class="preview-banner failure">✗ 不存在可行的安全改频顺序。</div>
+      ${reasonsHtml(payload.reasons)}
+      ${checkListHtml([...(payload.targetChecks || []), ...(payload.startChecks || [])])}
+      ${occLine}
+      <p class="plan-meta" style="margin:8px 0 4px">当前完整频率表（改频前）：</p>
+      ${freqTableHtml(payload.initialTable || [])}
+      <p class="hint" style="margin-top:8px">约束：每步只允许将一台未锁定设备由当前频率直接改到目标频率，
+      不使用临时频率、每台至多一次；每个中间配置都必须无互调冲突并避开占用区间。</p>`;
+    return;
+  }
+
+  // 成功：逐步展示
+  const stepsHtml = (payload.steps || []).map((s) => `
+    <div class="guide-step">
+      <p class="step-title">
+        <span class="step-no">第 ${s.step} 步</span>
+        将设备 <strong>${esc(s.deviceName)}</strong>（ID ${s.deviceId}）
+        由 <span class="freq">${fmt(s.from)}</span> MHz
+        改为 <span class="freq ok-text">${fmt(s.to)}</span> MHz
+      </p>
+      <p class="plan-meta" style="margin:2px 0 4px">该步完成后的完整频率表：</p>
+      ${freqTableHtml(s.tableAfter, s.deviceId)}
+    </div>`).join('');
+
+  const orderText = (payload.order || []).map((id, i) => {
+    const d = (payload.steps[i] || {}).deviceName || `ID ${id}`;
+    return `${i + 1}. ${d}（ID ${id}）`;
+  }).join('  →  ');
+
+  body.innerHTML = `
+    <div class="preview-banner success">
+      ✓ 已找到安全改频顺序（共 ${payload.steps.length} 步）。每个中间配置均已通过全部互调冲突检查与占用区间闭区间检查。
+    </div>
+    <p class="plan-meta" style="margin:8px 0">改频顺序：${esc(orderText)}</p>
+    ${occLine}
+    <details>
+      <summary class="muted" style="cursor:pointer">查看目标配置 / 起始配置检查项</summary>
+      ${checkListHtml([...(payload.targetChecks || []), ...(payload.startChecks || [])])}
+    </details>
+    <p class="plan-meta" style="margin:8px 0 4px">改频前完整频率表：</p>
+    ${freqTableHtml(payload.initialTable || [])}
+    <div class="guide-steps">${stepsHtml}</div>
+    <p class="hint" style="margin-top:8px">
+      顺序选择规则：穷举全部可能顺序，存在多个可行顺序时取设备 ID 序列字典序最小者；
+      每台设备仅改一次、直接改到目标频率，不使用临时频率。本指引不会写回设备或方案。
+    </p>`;
+}
+
+async function openGuide(planId, planName) {
+  guideModal.hidden = false;
+  guideState = { planId, planName };
+  $('#guide-body').innerHTML = '<p class="empty-state">正在生成安全改频指引…</p>';
+  try {
+    const res = await fetch(`/api/plans/${planId}/switch-guide`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok && res.status !== 422) throw new Error(data.error || `请求失败（${res.status}）`);
+    renderGuide(data);
+  } catch (e) {
+    $('#guide-body').innerHTML = `<p class="danger-text">生成指引失败：${esc(e.message)}</p>`;
+  }
+}
+
+$('#btn-guide-close').addEventListener('click', closeGuide);
+$('#btn-reguide').addEventListener('click', () => {
+  if (guideState) openGuide(guideState.planId, guideState.planName).catch((e) => toast(e.message, true));
+});
+guideModal.addEventListener('click', (e) => { if (e.target === guideModal) closeGuide(); });
 
 /* ---------- 启动 ---------- */
 

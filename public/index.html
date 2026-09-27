@@ -98,6 +98,21 @@
     </div>
   </div>
 
+  <!-- 安全改频指引弹窗（只读） -->
+  <div id="guide-modal" class="modal-backdrop" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+      <div class="modal-head">
+        <h2 id="guide-title">安全改频指引</h2>
+        <button type="button" class="btn btn-sm btn-ghost" id="btn-guide-close">关闭</button>
+      </div>
+      <div id="guide-body" class="modal-body"></div>
+      <div class="modal-foot">
+        <span class="hint" style="margin-right:auto">本指引为只读生成，不会修改任何设备频率或方案内容。</span>
+        <button type="button" class="btn" id="btn-reguide">重新生成</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
