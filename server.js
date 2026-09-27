@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const db = require('./db');
-const { mhzToHz, hzToMhz, computeConflicts, coordinate, normalizeOccupiedBands } = require('./lib/intermod');
+const { mhzToHz, hzToMhz, computeConflicts, coordinate, normalizeOccupiedBands, findSwitchOrder } = require('./lib/intermod');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -406,6 +406,50 @@ function evaluatePlan(planRow, devices) {
   return { ok, reasons, checks, previewDevices, conflicts, occupiedBands, targets };
 }
 
+/**
+ * 改频指引的当前配置检查：当前配置须无互调冲突，
+ * 且各设备当前频率的保护区（当前保护间隔）不得与方案所存占用区间相交（闭区间，端点相接也算）。
+ *
+ * @param {Array} devices 当前设备列表（rowToDevice 之后）
+ * @param {Array<{lo:number, hi:number}>} occupiedBands 方案所存占用区间（MHz，已合并）
+ * @returns {{ok:boolean, reasons:string[], conflicts:Array,
+ *            occupiedHits:Array<{device:object, band:{loHz:number, hiHz:number}}>}}
+ */
+function evaluateCurrentConfig(devices, occupiedBands) {
+  const reasons = [];
+
+  const conflicts = computeConflicts(toChannels(devices));
+  if (conflicts.length > 0) {
+    const shown = conflicts.slice(0, 5).map((c) =>
+      `${c.productType} 积 ${hzToMhz(c.productHz)} MHz（${c.source.map((s) => s.name).join(' × ')}）` +
+      ` 落入「${c.victim.name}」保护区（${hzToMhz(c.victim.freqHz)} ± ${hzToMhz(c.victim.guardHz)} MHz）`);
+    reasons.push(
+      `当前配置存在 ${conflicts.length} 处互调冲突，须先消除才能安全改频：` +
+      `${shown.join('；')}${conflicts.length > 5 ? `；等共 ${conflicts.length} 处` : ''}。`,
+    );
+  }
+
+  const occupiedHz = occupiedBands.map((b) => ({ loHz: mhzToHz(b.lo), hiHz: mhzToHz(b.hi) }));
+  const occupiedHits = devices
+    .map((d) => {
+      const f = mhzToHz(d.frequency);
+      const g = mhzToHz(d.guard);
+      const hit = occupiedHz.find((o) => f - g <= o.hiHz && o.loHz <= f + g);
+      return hit ? { device: d, band: hit } : null;
+    })
+    .filter(Boolean);
+  for (const h of occupiedHits) {
+    reasons.push(
+      `设备「${h.device.name}」当前频率 ${h.device.frequency} MHz 的保护区` +
+      `（${hzToMhz(mhzToHz(h.device.frequency) - mhzToHz(h.device.guard))}–` +
+      `${hzToMhz(mhzToHz(h.device.frequency) + mhzToHz(h.device.guard))} MHz）` +
+      `与方案所存占用区间 ${hzToMhz(h.band.loHz)}–${hzToMhz(h.band.hiHz)} MHz 相交（闭区间，端点相接也算）。`,
+    );
+  }
+
+  return { ok: conflicts.length === 0 && occupiedHits.length === 0, reasons, conflicts, occupiedHits };
+}
+
 app.post('/api/plans', (req, res) => {
   const body = req.body || {};
   const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : null;
@@ -542,6 +586,98 @@ app.post('/api/plans/:id/apply', (req, res) => {
   // 一次性凭据：确认成功（或失败回滚后状态已不同）即作废
   previewTokens.delete(token);
   res.json({ ok: true, applied: outcome.applied, changed: outcome.changed });
+});
+
+// ---------- 安全改频指引 ----------
+
+/**
+ * 安全改频指引（只读，不写回设备或方案）：
+ * 以当前设备与选定方案生成逐台改频步骤。前置条件：
+ *   - 当前配置无互调冲突，且当前保护区避开方案所存占用区间（闭区间）；
+ *   - 目标配置通过与应用前预览相同的全套检查（evaluatePlan）。
+ * 每步仅将一台未锁定设备由当前频率直接改到目标值（不用临时频率、每台至多一次），
+ * 每个中间配置均按当前保护间隔检查全部互调冲突与占用区间闭区间相交；
+ * 搜索全部顺序，取设备 ID 序列字典序最小者。
+ */
+app.post('/api/plans/:id/switch-guide', (req, res) => {
+  const row = db.prepare('SELECT * FROM plans WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '方案不存在' });
+
+  const devices = listDevices();
+
+  // 目标侧：复用应用前检查，与预览/应用同一口径
+  const target = evaluatePlan(row, devices);
+  // 当前侧：当前配置无互调冲突、当前保护区不侵入方案所存占用区间
+  const current = evaluateCurrentConfig(devices, target.occupiedBands);
+
+  if (!current.ok || !target.ok) {
+    return res.status(422).json({
+      error: '无法生成安全改频指引：当前配置或目标方案检查未通过',
+      plan: planToJson(row),
+      occupiedBands: target.occupiedBands,
+      reasons: [...current.reasons, ...target.reasons],
+      currentConflicts: current.conflicts.map(conflictToJson),
+      currentOccupiedHits: current.occupiedHits.map((h) => ({
+        device: { id: h.device.id, name: h.device.name, frequency: h.device.frequency, guard: h.device.guard },
+        band: { lo: hzToMhz(h.band.loHz), hi: hzToMhz(h.band.hiHz) },
+      })),
+      targetChecks: target.checks,
+      targetReasons: target.reasons,
+      targetConflicts: target.conflicts.map(conflictToJson),
+    });
+  }
+
+  const channels = toChannels(devices);
+  const targetsHz = devices.map((d) => mhzToHz(target.targets.get(d.id)));
+  const occupiedHz = target.occupiedBands.map((b) => ({ loHz: mhzToHz(b.lo), hiHz: mhzToHz(b.hi) }));
+  const result = findSwitchOrder(channels, targetsHz, occupiedHz);
+
+  /** 某一步的完整频率表（MHz），并标注各设备是否已达目标 */
+  const tableFor = (freqsHz) => devices.map((d, i) => ({
+    id: d.id,
+    name: d.name,
+    locked: d.locked,
+    frequency: hzToMhz(freqsHz[i]),
+    atTarget: freqsHz[i] === targetsHz[i],
+  }));
+
+  if (result.noop) {
+    return res.json({
+      plan: planToJson(row),
+      occupiedBands: target.occupiedBands,
+      noop: true,
+      solvable: true,
+      message: '当前频率与方案目标完全一致，无需改频。',
+      steps: [],
+      table: tableFor(channels.map((c) => c.freqHz)),
+    });
+  }
+
+  if (!result.solvable) {
+    return res.json({
+      plan: planToJson(row),
+      occupiedBands: target.occupiedBands,
+      noop: false,
+      solvable: false,
+      message: '无可行改频顺序：任一逐台改频顺序都会在某个中间配置产生互调冲突或侵入方案所存占用区间' +
+        '（每步须直接改到目标值，不允许使用临时频率）。请先手动调整当前频率到安全状态，或重新协调方案。',
+      steps: [],
+    });
+  }
+
+  res.json({
+    plan: planToJson(row),
+    occupiedBands: target.occupiedBands,
+    noop: false,
+    solvable: true,
+    steps: result.steps.map((s, k) => ({
+      step: k + 1,
+      device: { id: s.id, name: s.name },
+      from: hzToMhz(s.fromHz),
+      to: hzToMhz(s.toHz),
+      table: tableFor(s.freqsHz),
+    })),
+  });
 });
 
 // ---------- 示例数据（便于快速体验） ----------

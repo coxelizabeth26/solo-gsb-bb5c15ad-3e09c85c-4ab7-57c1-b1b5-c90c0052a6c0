@@ -394,10 +394,12 @@ async function loadPlans() {
         </table></div>
         <div class="plan-actions">
           <button class="btn btn-sm btn-primary" data-act="apply">预览后应用</button>
+          <button class="btn btn-sm" data-act="guide">安全改频指引</button>
           <button class="btn btn-sm btn-danger" data-act="del">删除方案</button>
         </div>
       </details>`;
     div.querySelector('[data-act="apply"]').addEventListener('click', () => openPreview(p.id));
+    div.querySelector('[data-act="guide"]').addEventListener('click', () => openGuide(p.id));
     div.querySelector('[data-act="del"]').addEventListener('click', async () => {
       if (!confirm(`确定删除方案「${p.name}」？`)) return;
       try {
@@ -524,6 +526,103 @@ $('#btn-confirm-apply').addEventListener('click', async () => {
     }
   }
 });
+
+/* ---------- 安全改频指引（只读） ---------- */
+
+let guideState = null; // { planId }
+
+const guideModal = $('#guide-modal');
+
+function closeGuide() {
+  guideModal.hidden = true;
+  guideState = null;
+}
+
+/** 指引中某一步的完整频率表；changedId 为本步改频的设备 */
+function guideTable(table, changedId) {
+  const rows = table.map((r) => `
+    <tr class="${r.id === changedId ? 'row-hl' : ''}">
+      <td>${esc(r.name)} ${r.locked ? '<span class="tag locked">锁定</span>' : ''}</td>
+      <td class="freq">${fmt(r.frequency)}</td>
+      <td>${r.id === changedId
+        ? '<span class="tag moved">本步改频</span>'
+        : (r.atTarget ? '<span class="muted">已达目标</span>' : '<span class="warn-text">待改频</span>')}</td>
+    </tr>`).join('');
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>设备</th><th>频率 (MHz)</th><th>状态</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+function renderGuide(data) {
+  const body = $('#guide-body');
+  const p = data.plan || {};
+
+  if (data.noop) {
+    body.innerHTML = `
+      <div class="preview-banner success">方案「${esc(p.name || '')}」：当前频率与目标完全一致，无需改频。</div>
+      ${guideTable(data.table || [], null)}
+      <p class="hint">本指引为只读预览，不会写回设备或方案。</p>`;
+    return;
+  }
+
+  if (!data.solvable) {
+    body.innerHTML = `
+      <div class="preview-banner failure">方案「${esc(p.name || '')}」：无可行改频顺序。</div>
+      <p class="warn-text" style="margin:0 0 6px">${esc(data.message || '')}</p>
+      <p class="hint">本指引为只读预览，不会写回设备或方案。</p>`;
+    return;
+  }
+
+  const stepsHtml = data.steps.map((s) => `
+    <div class="guide-step">
+      <p class="guide-step-head"><strong>第 ${s.step} 步</strong>：将「${esc(s.device.name)}」由
+        <span class="freq">${fmt(s.from)}</span> MHz 改为
+        <span class="freq ok-text">${fmt(s.to)}</span> MHz</p>
+      ${guideTable(s.table, s.device.id)}
+    </div>`).join('');
+
+  body.innerHTML = `
+    <div class="preview-banner success">方案「${esc(p.name || '')}」：共 ${data.steps.length} 步，每步仅改一台未锁定设备；
+      每个中间配置均无互调冲突且不侵入方案所存占用区间。</div>
+    ${stepsHtml}
+    <p class="hint">请严格按顺序逐步手动改频；本指引为只读预览，不会写回设备或方案。</p>`;
+}
+
+function renderGuideFailed(payload) {
+  const body = $('#guide-body');
+  const p = payload.plan || {};
+  const reasons = (payload.reasons || [])
+    .map((r) => `<li class="danger-text">${esc(r)}</li>`).join('');
+  const checks = (payload.targetChecks || [])
+    .map((c) => `<li class="${c.ok ? 'ok-text' : 'danger-text'}">${c.ok ? '✓' : '✗'} ${esc(c.name)}</li>`).join('');
+  body.innerHTML = `
+    <div class="preview-banner failure">方案「${esc(p.name || '')}」无法生成安全改频指引，请先处理以下问题。</div>
+    <div class="preview-reasons"><ul>${reasons}</ul></div>
+    ${checks ? `<p class="plan-meta" style="margin:8px 0 2px">目标方案应用检查：</p><ul class="check-list">${checks}</ul>` : ''}`;
+}
+
+async function openGuide(planId) {
+  guideState = { planId };
+  guideModal.hidden = false;
+  $('#guide-body').innerHTML = '<p class="empty-state">正在生成…</p>';
+  try {
+    const data = await api(`/api/plans/${planId}/switch-guide`, { method: 'POST' });
+    renderGuide(data);
+  } catch (e) {
+    if (e.status === 422) {
+      renderGuideFailed(e.data);
+    } else {
+      $('#guide-body').innerHTML = `<p class="danger-text">生成失败：${esc(e.message)}</p>`;
+    }
+  }
+}
+
+$('#btn-guide-close').addEventListener('click', closeGuide);
+$('#btn-guide-refresh').addEventListener('click', () => {
+  if (guideState) openGuide(guideState.planId).catch((e) => toast(e.message, true));
+});
+guideModal.addEventListener('click', (e) => { if (e.target === guideModal) closeGuide(); });
 
 /* ---------- 启动 ---------- */
 

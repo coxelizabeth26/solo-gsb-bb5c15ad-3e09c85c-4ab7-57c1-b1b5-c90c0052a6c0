@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mhzToHz, hzToMhz, computeConflicts, coordinate, normalizeOccupiedBands } = require('../lib/intermod');
+const { mhzToHz, hzToMhz, computeConflicts, coordinate, normalizeOccupiedBands, findSwitchOrder } = require('../lib/intermod');
 
 /** 构造频道对象 */
 function ch(id, freqMhz, guardMhz = 0.25, locked = false) {
@@ -296,4 +296,68 @@ test('占用避让：互调规则与占用约束同时生效，结果既无互�
   assert.equal(computeConflicts(solved).length, 0);
   // 新载频保护区不侵入占用区间
   assert.ok(f2 + mhzToHz(0.25) < mhzToHz(500.275) || f2 - mhzToHz(0.25) > mhzToHz(500.5));
+});
+
+/* ---------- 安全改频顺序搜索 ---------- */
+
+test('改频顺序：全部频率已与目标一致 → noop 无需改频', () => {
+  const channels = [ch(1, 500), ch(2, 510)];
+  const r = findSwitchOrder(channels, [mhzToHz(500), mhzToHz(510)]);
+  assert.equal(r.solvable, true);
+  assert.equal(r.noop, true);
+  assert.deepEqual(r.steps, []);
+});
+
+test('改频顺序：多个可行顺序时取设备 ID 序列字典序最小者', () => {
+  // 两台独立设备，两种顺序都可行 → 应按 ID 升序
+  const channels = [ch(1, 500), ch(2, 510)];
+  const r = findSwitchOrder(channels, [mhzToHz(502), mhzToHz(512)]);
+  assert.equal(r.solvable, true);
+  assert.equal(r.noop, false);
+  assert.deepEqual(r.steps.map((s) => s.id), [1, 2]);
+  assert.equal(r.steps[0].fromHz, mhzToHz(500));
+  assert.equal(r.steps[0].toHz, mhzToHz(502));
+  // 每步频率表完整且逐步收敛到目标
+  assert.deepEqual(r.steps[0].freqsHz, [mhzToHz(502), mhzToHz(510)]);
+  assert.deepEqual(r.steps[1].freqsHz, [mhzToHz(502), mhzToHz(512)]);
+});
+
+test('改频顺序：顺序敏感场景，仅有一种可行顺序', () => {
+  // A: 500.0 → 500.4，B: 500.4 → 500.8（guard 0.25）
+  // 先改 A 会得到 {500.4, 500.4} 同频冲突；必须先改 B
+  const channels = [ch(1, 500.0), ch(2, 500.4)];
+  const r = findSwitchOrder(channels, [mhzToHz(500.4), mhzToHz(500.8)]);
+  assert.equal(r.solvable, true);
+  assert.deepEqual(r.steps.map((s) => s.id), [2, 1]);
+  // 每个中间配置都必须真的无冲突
+  for (const s of r.steps) {
+    const trial = s.freqsHz.map((f, i) => ({
+      id: channels[i].id, name: channels[i].name, freqHz: f, guardHz: channels[i].guardHz,
+    }));
+    assert.equal(computeConflicts(trial).length, 0);
+  }
+});
+
+test('改频顺序：交换频率且无临时频率可用 → 无可行顺序', () => {
+  // A: 500 → 502，B: 502 → 500；任何一步都会造成同频冲突
+  const channels = [ch(1, 500), ch(2, 502)];
+  const r = findSwitchOrder(channels, [mhzToHz(502), mhzToHz(500)]);
+  assert.equal(r.solvable, false);
+  assert.equal(r.noop, false);
+  assert.deepEqual(r.steps, []);
+});
+
+test('改频顺序：目标配置侵入占用区间（闭区间，端点相接也算）→ 无可行顺序', () => {
+  // A: 500 → 501，B: 510 → 511；目标 A=501 的保护区 [500.75, 501.25] 与占用区间端点相接
+  // → 终点配置非法，任何顺序都不可行
+  const channels = [ch(1, 500), ch(2, 510)];
+  const occupied = [{ loHz: mhzToHz(500.75), hiHz: mhzToHz(501.25) }];
+  const r = findSwitchOrder(channels, [mhzToHz(501), mhzToHz(511)], occupied);
+  assert.equal(r.solvable, false);
+});
+
+test('改频顺序：锁定频道需要改频 → 直接判无可行顺序', () => {
+  const channels = [ch(1, 500, 0.25, true), ch(2, 510)];
+  const r = findSwitchOrder(channels, [mhzToHz(501), mhzToHz(512)]);
+  assert.equal(r.solvable, false);
 });

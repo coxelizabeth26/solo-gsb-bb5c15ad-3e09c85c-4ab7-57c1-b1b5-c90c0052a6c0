@@ -98,6 +98,20 @@
     </div>
   </div>
 
+  <!-- 安全改频指引弹窗（只读） -->
+  <div id="guide-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+      <div class="modal-head">
+        <h2 id="guide-title">安全改频指引</h2>
+        <button type="button" class="btn btn-sm btn-ghost" id="btn-guide-close">关闭</button>
+      </div>
+      <div id="guide-body" class="modal-body"></div>
+      <div class="modal-foot">
+        <button type="button" class="btn" id="btn-guide-refresh">重新生成</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
